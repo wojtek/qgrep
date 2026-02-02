@@ -1,0 +1,14 @@
+# build artifacts
+/build/
+/qgrep
+
+# visual studio temporary files
+/.vs/
+*.suo
+nul
+
+# baseline data files (too large for git)
+/baseline/*.qgd
+/baseline/*.qgf
+/baseline/*.exe
+/baseline/*.txt
