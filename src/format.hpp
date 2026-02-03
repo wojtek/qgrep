@@ -53,7 +53,7 @@ struct DataChunkFileHeader
 	uint32_t dataSize;
 
 	uint32_t startLine;
-	uint32_t reserved;
+	uint32_t transform; // TransformKind (legacy files may have 0)
 
 	uint64_t fileSize;
 	uint64_t timeStamp;

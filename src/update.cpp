@@ -70,7 +70,7 @@ static int comparePath(const FileInfo& info, const DataChunkFileHeader& file, co
 static bool isFileCurrent(const FileInfo& info, const DataChunkFileHeader& file, const char* data)
 {
 	assert(comparePath(info, file, data) == 0);
-	if (info.transform != TRANSFORM_NONE)
+	if (info.transform != static_cast<TransformKind>(file.transform))
 		return false;
 	return info.timeStamp == file.timeStamp && info.fileSize == file.fileSize;
 }
@@ -130,7 +130,8 @@ static void processChunkData(Output* output, BuildContext* builder, UpdateFileIt
 
 		if (comparePath(*prev, f, data) == 0 && isFileCurrent(*prev, f, data))
 		{
-			buildAppendFilePart(builder, prev->path.c_str(), f.startLine, data + f.dataOffset, f.dataSize, prev->timeStamp, prev->fileSize);
+			buildAppendFilePart(builder, prev->path.c_str(), f.startLine, data + f.dataOffset, f.dataSize,
+				static_cast<TransformKind>(f.transform), prev->timeStamp, prev->fileSize);
 			skipFirstFile = true;
 		}
 	}
@@ -153,7 +154,8 @@ static void processChunkData(Output* output, BuildContext* builder, UpdateFileIt
 			// check if we can reuse the data from qgrep db
 			if (isFileCurrent(*fileit, f, data))
 			{
-				buildAppendFilePart(builder, fileit->path.c_str(), f.startLine, data + f.dataOffset, f.dataSize, fileit->timeStamp, fileit->fileSize);
+				buildAppendFilePart(builder, fileit->path.c_str(), f.startLine, data + f.dataOffset, f.dataSize,
+					static_cast<TransformKind>(f.transform), fileit->timeStamp, fileit->fileSize);
 			}
 			else
 			{

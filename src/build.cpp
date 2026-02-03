@@ -70,6 +70,7 @@ struct File
 	Blob contents;
 
 	uint32_t startLine;
+	TransformKind transform;
 	uint64_t fileSize;
 	uint64_t timeStamp;
 };
@@ -321,7 +322,7 @@ static ChunkData prepareChunkData(const Chunk& chunk)
 		h.dataSize = f.contents.size();
 
 		h.startLine = f.startLine;
-		h.reserved = 0;
+		h.transform = static_cast<uint32_t>(f.transform);
 
 		h.fileSize = f.fileSize;
 		h.timeStamp = f.timeStamp;
@@ -609,13 +610,14 @@ BuildContext* buildStart(Output* output, const char* path, unsigned int fileCoun
 	return context.release();
 }
 
-static void appendFilePart(BuildContext* context, const char* path, unsigned int startLine, const char* data, size_t dataSize, uint64_t timeStamp, uint64_t fileSize, std::vector<char>* dataSource)
+static void appendFilePart(BuildContext* context, const char* path, unsigned int startLine, const char* data, size_t dataSize, TransformKind transform, uint64_t timeStamp, uint64_t fileSize, std::vector<char>* dataSource)
 {
 	if (!context->pendingFiles.empty() && context->pendingFiles.back().name == path)
 	{
 		File& file = context->pendingFiles.back();
 
 		assert(file.startLine < startLine);
+		assert(file.transform == transform);
 		assert(file.timeStamp == timeStamp && file.fileSize == fileSize);
 		assert(file.contents.offset + file.contents.count == file.contents.storage->size());
 
@@ -630,6 +632,7 @@ static void appendFilePart(BuildContext* context, const char* path, unsigned int
 
 		file.name = path;
 		file.startLine = startLine;
+		file.transform = transform;
 		file.timeStamp = timeStamp;
 		file.fileSize = fileSize;
 		file.contents = dataSource ? std::move(*dataSource) : std::vector<char>(data, data + dataSize);
@@ -648,9 +651,9 @@ static void appendFilePart(BuildContext* context, const char* path, unsigned int
 	}
 }
 
-void buildAppendFilePart(BuildContext* context, const char* path, unsigned int startLine, const char* data, size_t dataSize, uint64_t timeStamp, uint64_t fileSize)
+void buildAppendFilePart(BuildContext* context, const char* path, unsigned int startLine, const char* data, size_t dataSize, TransformKind transform, uint64_t timeStamp, uint64_t fileSize)
 {
-	appendFilePart(context, path, startLine, data, dataSize, timeStamp, fileSize, nullptr);
+	appendFilePart(context, path, startLine, data, dataSize, transform, timeStamp, fileSize, nullptr);
 }
 
 bool buildAppendFile(BuildContext* context, const char* path, uint64_t timeStamp, uint64_t fileSize, TransformKind transform)
@@ -682,7 +685,7 @@ bool buildAppendFile(BuildContext* context, const char* path, uint64_t timeStamp
 		contents = convertToUTF8(std::move(contents));
 		contents = applyTransform(transform, std::move(contents));
 
-		appendFilePart(context, path, 0, contents.empty() ? nullptr : &contents[0], contents.size(), timeStamp, fileSize, &contents);
+		appendFilePart(context, path, 0, contents.empty() ? nullptr : &contents[0], contents.size(), transform, timeStamp, fileSize, &contents);
 
 		return true;
 	}
@@ -914,7 +917,7 @@ void buildProject(Output* output, const char* path)
 			{
 				appendFilePart(builder, files[i].path.c_str(), 0,
 					contents.empty() ? nullptr : &contents[0], contents.size(),
-					files[i].timeStamp, files[i].fileSize, &contents);
+					files[i].transform, files[i].timeStamp, files[i].fileSize, &contents);
 			}
 		}
 
