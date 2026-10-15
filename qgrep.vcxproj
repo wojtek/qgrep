@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="DebugDLL|Win32">
@@ -169,7 +169,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>USE_SSE2;NOMINMAX;_WIN32_WINNT=0x0600;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>extern/lz4/lib;extern/re2</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>extern/lz4/lib;extern/re2;extern/zstd</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <DisableSpecificWarnings>4996;4267;4244</DisableSpecificWarnings>
       <TreatWarningAsError>true</TreatWarningAsError>
@@ -187,7 +187,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>USE_SSE2;NOMINMAX;_WIN32_WINNT=0x0600;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>extern/lz4/lib;extern/re2</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>extern/lz4/lib;extern/re2;extern/zstd</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <DisableSpecificWarnings>4996;4267;4244</DisableSpecificWarnings>
       <TreatWarningAsError>true</TreatWarningAsError>
@@ -205,7 +205,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>USE_SSE2;NOMINMAX;_WIN32_WINNT=0x0600;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>extern/lz4/lib;extern/re2</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>extern/lz4/lib;extern/re2;extern/zstd</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <DisableSpecificWarnings>4996;4267;4244</DisableSpecificWarnings>
       <TreatWarningAsError>true</TreatWarningAsError>
@@ -223,7 +223,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>USE_SSE2;NOMINMAX;_WIN32_WINNT=0x0600;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>extern/lz4/lib;extern/re2</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>extern/lz4/lib;extern/re2;extern/zstd</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <DisableSpecificWarnings>4996;4267;4244</DisableSpecificWarnings>
       <TreatWarningAsError>true</TreatWarningAsError>
@@ -243,7 +243,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>USE_SSE2;NOMINMAX;_WIN32_WINNT=0x0600;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>extern/lz4/lib;extern/re2</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>extern/lz4/lib;extern/re2;extern/zstd</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DisableSpecificWarnings>4996;4267;4244</DisableSpecificWarnings>
       <TreatWarningAsError>true</TreatWarningAsError>
@@ -265,7 +265,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>USE_SSE2;NOMINMAX;_WIN32_WINNT=0x0600;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>extern/lz4/lib;extern/re2</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>extern/lz4/lib;extern/re2;extern/zstd</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DisableSpecificWarnings>4996;4267;4244</DisableSpecificWarnings>
       <TreatWarningAsError>true</TreatWarningAsError>
@@ -287,7 +287,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>USE_SSE2;NOMINMAX;_WIN32_WINNT=0x0600;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>extern/lz4/lib;extern/re2</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>extern/lz4/lib;extern/re2;extern/zstd</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DisableSpecificWarnings>4996;4267;4244</DisableSpecificWarnings>
       <TreatWarningAsError>true</TreatWarningAsError>
@@ -309,7 +309,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>USE_SSE2;NOMINMAX;_WIN32_WINNT=0x0600;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>extern/lz4/lib;extern/re2</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>extern/lz4/lib;extern/re2;extern/zstd</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DisableSpecificWarnings>4996;4267;4244</DisableSpecificWarnings>
       <TreatWarningAsError>true</TreatWarningAsError>
@@ -323,6 +323,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="extern\zstd\zstddeclib.c" />
     <ClCompile Include="extern\lz4\lib\lz4.c" />
     <ClCompile Include="extern\lz4\lib\lz4hc.c" />
     <ClCompile Include="extern\re2\re2\bitstate.cc" />

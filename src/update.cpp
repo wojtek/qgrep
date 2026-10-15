@@ -94,7 +94,7 @@ static bool isChunkCurrent(UpdateFileIterator& fileit, const DataChunkHeader& ch
 	return true;
 }
 
-static void processChunkData(Output* output, BuildContext* builder, UpdateFileIterator& fileit, UpdateStatistics& stats,
+static bool processChunkData(Output* output, BuildContext* builder, UpdateFileIterator& fileit, UpdateStatistics& stats,
 	const DataChunkHeader& chunk, char* buffer, std::unique_ptr<char[]>& compressed, std::unique_ptr<char[]>& index, std::unique_ptr<char[]>& extra)
 {
 	const char* data = buffer;
@@ -113,7 +113,7 @@ static void processChunkData(Output* output, BuildContext* builder, UpdateFileIt
 	{
 		fileit += chunk.fileCount - firstFileIsSuffix;
 		stats.chunksPreserved++;
-		return;
+		return true;
 	}
 
 	// decompress the chunk completely. this decompresses the file table redundantly but the performance cost of that is negligible
@@ -143,7 +143,7 @@ static void processChunkData(Output* output, BuildContext* builder, UpdateFileIt
 		// add all files before the file
 		while (fileit && comparePath(*fileit, f, data) < 0)
 		{
-			buildAppendFile(builder, fileit->path.c_str(), fileit->timeStamp, fileit->fileSize, fileit->transform);
+			if (!buildAppendFile(builder, fileit->path.c_str(), fileit->timeStamp, fileit->fileSize, fileit->transform)) return false;
 			++fileit;
 			stats.filesAdded++;
 		}
@@ -159,7 +159,7 @@ static void processChunkData(Output* output, BuildContext* builder, UpdateFileIt
 			}
 			else
 			{
-				buildAppendFile(builder, fileit->path.c_str(), fileit->timeStamp, fileit->fileSize, fileit->transform);
+				if (!buildAppendFile(builder, fileit->path.c_str(), fileit->timeStamp, fileit->fileSize, fileit->transform)) return false;
 				stats.filesChanged++;
 			}
 
@@ -170,6 +170,7 @@ static void processChunkData(Output* output, BuildContext* builder, UpdateFileIt
 			stats.filesRemoved++;
 		}
 	}
+	return true;
 }
 
 static bool processFile(Output* output, BuildContext* builder, UpdateFileIterator& fileit, UpdateStatistics& stats, const char* path)
@@ -203,7 +204,7 @@ static bool processFile(Output* output, BuildContext* builder, UpdateFileIterato
 
 		char* uncompressed = data.get() + uncompressedOffset;
 
-		processChunkData(output, builder, fileit, stats, chunk, uncompressed, data, index, extra);
+		if (!processChunkData(output, builder, fileit, stats, chunk, uncompressed, data, index, extra)) return false;
 	}
 
 	return true;
@@ -230,17 +231,10 @@ bool updateProject(Output* output, const char* path)
 	if (!group)
 		return false;
 
-	removeFile(replaceExtension(path, ".qgc").c_str());
-
 	output->print("Scanning project...\r");
 
 	std::vector<FileInfo> files = getProjectGroupFiles(output, group.get());
 
-	output->print("Building file table...\r");
-
-	if (!buildFiles(output, path, files))
-		return false;
-	
 	std::string targetPath = replaceExtension(path, ".qgd");
 	std::string tempPath = targetPath + "_";
 
@@ -258,13 +252,19 @@ bool updateProject(Output* output, const char* path)
 		if (!processFile(output, builder, fileit, stats, targetPath.c_str()))
 		{
 			buildFinish(builder);
+			removeFile(tempPath.c_str());
 			return false;
 		}
 
 		// update all unprocessed files
 		while (fileit)
 		{
-			buildAppendFile(builder, fileit->path.c_str(), fileit->timeStamp, fileit->fileSize, fileit->transform);
+			if (!buildAppendFile(builder, fileit->path.c_str(), fileit->timeStamp, fileit->fileSize, fileit->transform))
+			{
+				buildFinish(builder);
+				removeFile(tempPath.c_str());
+				return false;
+			}
 			++fileit;
 			stats.filesAdded++;
 		}
@@ -276,13 +276,14 @@ bool updateProject(Output* output, const char* path)
 
 	auto time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start);
 
-	printStatistics(output, stats, totalChunks, time.count() / 1e3);
-	
+	if (!buildFiles(output, path, files)) { removeFile(tempPath.c_str()); return false; }
 	if (!renameFile(tempPath.c_str(), targetPath.c_str()))
 	{
 		output->error("Error saving data file %s\n", targetPath.c_str());
 		return false;
 	}
-
+	removeFile(replaceExtension(path, ".qgc").c_str());
+	printStatistics(output, stats, totalChunks, time.count() / 1e3);
+	buildReportInputCoverage(output, files);
 	return true;
 }

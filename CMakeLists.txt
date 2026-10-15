@@ -101,6 +101,9 @@ add_library(lz4 STATIC
 
 target_include_directories(lz4 PUBLIC ${CMAKE_SOURCE_DIR}/extern/lz4/lib)
 
+add_library(zstd_decoder STATIC extern/zstd/zstddeclib.c)
+target_include_directories(zstd_decoder PUBLIC ${CMAKE_SOURCE_DIR}/extern/zstd)
+
 add_executable(qgrep
     src/blockpool.cpp
     src/build.cpp
@@ -131,7 +134,7 @@ add_executable(qgrep
     src/workqueue.cpp
 )
 
-target_link_libraries(qgrep PUBLIC re2 lz4)
+target_link_libraries(qgrep PUBLIC re2 lz4 zstd_decoder)
 
 if (NOT WIN32)
     target_link_libraries(qgrep PUBLIC pthread)

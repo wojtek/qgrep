@@ -2,12 +2,14 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 
 class Output;
 struct DataChunkHeader;
 enum TransformKind;
 
 struct BuildContext;
+struct FileInfo;
 
 BuildContext* buildStart(Output* output, const char* path, unsigned int fileCount = 0);
 
@@ -17,4 +19,5 @@ bool buildAppendChunk(BuildContext* context, const DataChunkHeader& header, std:
 
 unsigned int buildFinish(BuildContext* context);
 
-void buildProject(Output* output, const char* path);
+bool buildProject(Output* output, const char* path);
+void buildReportInputCoverage(Output* output, const std::vector<FileInfo>& files);

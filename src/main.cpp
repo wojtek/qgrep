@@ -395,7 +395,7 @@ void printHelp(Output* output, bool extended)
 "in interactive mode, you can input 'search' and 'files' commands without a project list.\n");
 }
 
-void mainImpl(Output* output, int argc, const char** argv, const char* input, size_t inputSize)
+bool mainImpl(Output* output, int argc, const char** argv, const char* input, size_t inputSize)
 {
 	try
 	{
@@ -406,16 +406,18 @@ void mainImpl(Output* output, int argc, const char** argv, const char* input, si
 		else if (argc > 2 && strcmp(argv[1], "build") == 0)
 		{
 			std::vector<std::string> paths = getProjectPaths(argv[2]);
-
+			bool success = true;
 			for (size_t i = 0; i < paths.size(); ++i)
-				buildProject(output, paths[i].c_str());
+				success = buildProject(output, paths[i].c_str()) && success;
+			return success;
 		}
 		else if (argc > 2 && strcmp(argv[1], "update") == 0)
 		{
 			std::vector<std::string> paths = getProjectPaths(argv[2]);
-
+			bool success = true;
 			for (size_t i = 0; i < paths.size(); ++i)
-				updateProject(output, paths[i].c_str());
+				success = updateProject(output, paths[i].c_str()) && success;
+			return success;
 		}
 		else if (argc > 3 && strcmp(argv[1], "search") == 0)
 		{
@@ -515,7 +517,9 @@ void mainImpl(Output* output, int argc, const char** argv, const char* input, si
 	catch (const std::exception& e)
 	{
 		output->error("Uncaught exception: %s\n", e.what());
+		return false;
 	}
+	return true;
 }
 
 #ifdef _WIN32
@@ -537,7 +541,7 @@ static void pinModule()
 int main(int argc, const char** argv)
 {
 	StandardOutput output;
-	mainImpl(&output, argc, argv, 0, 0);
+	return mainImpl(&output, argc, argv, 0, 0) ? 0 : 1;
 }
 
 extern "C" DLLEXPORT const char* qgrepVim(const char* args)

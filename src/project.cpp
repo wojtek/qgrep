@@ -138,6 +138,7 @@ static TransformKind parseTransformKind(const std::string& value)
 {
 	if (value == "none") return TRANSFORM_NONE;
 	if (value == "jsonl") return TRANSFORM_JSONL;
+	if (value == "gemini") return TRANSFORM_GEMINI;
 
 	throw std::runtime_error("Unknown transform '" + value + "'");
 }
@@ -368,6 +369,9 @@ std::vector<FileInfo> getProjectGroupFiles(Output* output, ProjectGroup* group)
 	std::vector<FileInfo> files;
 	
 	getProjectGroupFilesRec(output, group, files);
+	for (auto& file: files)
+		if (file.transform == TRANSFORM_JSONL && file.path.size() >= 4 && file.path.compare(file.path.size() - 4, 4, ".zst") == 0)
+			file.transform = TRANSFORM_JSONL_ZSTD;
 
 	std::sort(files.begin(), files.end(), [](const FileInfo& l, const FileInfo& r) { return l.path < r.path; });
 	files.erase(std::unique(files.begin(), files.end(), [](const FileInfo& l, const FileInfo& r) { return l.path == r.path; }), files.end());

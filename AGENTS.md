@@ -12,6 +12,6 @@ Project notes for automation and code changes:
   - `& 'E:\wojtek_elysium_tsunami\agentx\bin\qgrep\qgrep.exe' update 'C:\Users\wojtek\.qgrep\conv.cfg'`
 - `conv.cfg` content summary:
   - JSONL transform on `C:\Users\wojtek\.claude\projects\**\*.jsonl` and `C:\Users\wojtek\.codex\sessions\**\*.jsonl`
-  - Raw JSON for `C:\Users\wojtek\.gemini\tmp\**\*.json` (excluding `bin/`)
+  - Gemini transform on `C:\Users\wojtek\.gemini\tmp\*\chats\*.json` (excluding `bin/`)
 - Transform caching change: after deploying new qgrep, run update once to seed transform metadata; subsequent updates should be fast unless logs change.
 - `CLAUDE.md` is a symlink to this file.

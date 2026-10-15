@@ -27,6 +27,9 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <stdexcept>
+
+#include "zstd.h"
 
 #include <string.h>
 
@@ -185,15 +188,49 @@ static std::vector<char> readFile(FileStream& in, size_t sizeHint = 0)
 		result.insert(result.end(), buffer, buffer + readsize);
 	}
 
-	// normalize new lines in a cross-platform way (don't rely on text-mode file I/O)
-	if (!result.empty())
-	{
-		size_t size = normalizeEOL(&result[0], result.size());
-		assert(size <= result.size());
-		result.resize(size);
-	}
-
 	return result;
+}
+
+static std::vector<char> readPreparedFile(const char* path, uint64_t fileSize, TransformKind transform)
+{
+	std::vector<char> contents = readFileOptimized(path);
+	if (contents.empty() && fileSize > 0)
+	{
+		FileStream in(path, "rb");
+		if (!in) throw std::runtime_error("cannot open source");
+		contents = readFile(in, static_cast<size_t>(fileSize));
+	}
+	size_t pathSize = strlen(path);
+	bool zstd = pathSize >= 4 && strcmp(path + pathSize - 4, ".zst") == 0;
+	zstd = zstd || (contents.size() >= 4 && memcmp(contents.data(), "\x28\xb5\x2f\xfd", 4) == 0);
+	if (zstd)
+	{
+		// Binary input MUST reach the decoder before EOL/encoding conversion.
+		std::unique_ptr<ZSTD_DStream, decltype(&ZSTD_freeDStream)> decoder(ZSTD_createDStream(), &ZSTD_freeDStream);
+		if (!decoder) throw std::bad_alloc();
+		size_t remaining = ZSTD_initDStream(decoder.get());
+		if (ZSTD_isError(remaining)) throw std::runtime_error(ZSTD_getErrorName(remaining));
+		ZSTD_inBuffer input = {contents.data(), contents.size(), 0};
+		std::vector<char> buffer(ZSTD_DStreamOutSize());
+		std::vector<char> decoded;
+		JsonlTransformStream jsonl;
+		ZSTD_outBuffer output = {buffer.data(), buffer.size(), 0};
+		do
+		{
+			output.pos = 0;
+			remaining = ZSTD_decompressStream(decoder.get(), &output, &input);
+			if (ZSTD_isError(remaining)) throw std::runtime_error(std::string("Zstandard: ") + ZSTD_getErrorName(remaining));
+			if (transform == TRANSFORM_JSONL || transform == TRANSFORM_JSONL_ZSTD)
+				jsonl.append(buffer.data(), output.pos);
+			else
+				decoded.insert(decoded.end(), buffer.data(), buffer.data() + output.pos);
+		} while (input.pos < input.size || (remaining && output.pos == output.size));
+		if (remaining) throw std::runtime_error("truncated Zstandard frame");
+		if (transform == TRANSFORM_JSONL || transform == TRANSFORM_JSONL_ZSTD) return jsonl.finish();
+		contents = std::move(decoded);
+	}
+	if (!contents.empty()) contents.resize(normalizeEOL(contents.data(), contents.size()));
+	return applyTransform(transform, convertToUTF8(std::move(contents)));
 }
 
 static std::pair<size_t, unsigned int> skipByLines(const char* data, size_t dataSize)
@@ -660,30 +697,7 @@ bool buildAppendFile(BuildContext* context, const char* path, uint64_t timeStamp
 {
 	try
 	{
-		// Try optimized Windows read first (uses FILE_FLAG_SEQUENTIAL_SCAN for better prefetching)
-		std::vector<char> contents = readFileOptimized(path);
-
-		// Fallback to FileStream if optimized read failed (e.g., on non-Windows or special files)
-		if (contents.empty() && fileSize > 0)
-		{
-			FileStream in(path, "rb");
-			if (!in)
-			{
-				context->output->error("Error reading file %s\n", path);
-				return false;
-			}
-			contents = readFile(in, static_cast<size_t>(fileSize));
-		}
-
-		// Normalize EOL and convert to UTF8
-		if (!contents.empty())
-		{
-			size_t size = normalizeEOL(&contents[0], contents.size());
-			contents.resize(size);
-		}
-
-		contents = convertToUTF8(std::move(contents));
-		contents = applyTransform(transform, std::move(contents));
+		std::vector<char> contents = readPreparedFile(path, fileSize, transform);
 
 		appendFilePart(context, path, 0, contents.empty() ? nullptr : &contents[0], contents.size(), transform, timeStamp, fileSize, &contents);
 
@@ -692,6 +706,11 @@ bool buildAppendFile(BuildContext* context, const char* path, uint64_t timeStamp
 	catch (const std::bad_alloc&)
 	{
 		context->output->error("Error reading file %s: out of memory\n", path);
+		return false;
+	}
+	catch (const std::exception& error)
+	{
+		context->output->error("Error reading file %s: %s\n", path, error.what());
 		return false;
 	}
 }
@@ -779,6 +798,7 @@ struct ReadAheadBuffer
 		TransformKind transform;
 		bool ready;
 		bool error;
+		std::string errorMessage;
 
 		ReadFile() : timeStamp(0), fileSize(0), transform(TRANSFORM_NONE), ready(false), error(false) {}
 	};
@@ -812,26 +832,9 @@ struct ReadAheadBuffer
 
 			ReadFile& rf = files[idx];
 
-			// Read file
-			std::vector<char> contents = readFileOptimized(rf.path.c_str());
-			if (contents.empty() && rf.fileSize > 0)
-			{
-				// Fallback
-				FileStream in(rf.path.c_str(), "rb");
-				if (in)
-					contents = readFile(in, static_cast<size_t>(rf.fileSize));
-			}
-
-			// Normalize EOL
-			if (!contents.empty())
-			{
-				size_t size = normalizeEOL(&contents[0], contents.size());
-				contents.resize(size);
-			}
-
-			// Convert to UTF8
-			contents = convertToUTF8(std::move(contents));
-			contents = applyTransform(rf.transform, std::move(contents));
+			std::vector<char> contents;
+			try { contents = readPreparedFile(rf.path.c_str(), rf.fileSize, rf.transform); }
+			catch (const std::exception& error) { rf.error = true; rf.errorMessage = error.what(); }
 
 			{
 				std::lock_guard<std::mutex> lock(mutex);
@@ -865,31 +868,31 @@ struct ReadAheadBuffer
 	}
 };
 
-void buildProject(Output* output, const char* path)
+void buildReportInputCoverage(Output* output, const std::vector<FileInfo>& files)
+{
+	unsigned int compressed = 0;
+	for (const auto& file: files) if (file.transform == TRANSFORM_JSONL_ZSTD) ++compressed;
+	output->print("Content coverage: jsonl-zstd-v1 files=%u\n", compressed);
+}
+
+bool buildProject(Output* output, const char* path)
 {
 	output->print("Building %s:\n", path);
 
 	std::unique_ptr<ProjectGroup> group = parseProject(output, path);
 	if (!group)
-		return;
-
-	removeFile(replaceExtension(path, ".qgc").c_str());
+		return false;
 
 	output->print("Scanning project...\r");
 
 	std::vector<FileInfo> files = getProjectGroupFiles(output, group.get());
-
-	output->print("Building file table...\r");
-
-	if (!buildFiles(output, path, files))
-		return;
 
 	std::string targetPath = replaceExtension(path, ".qgd");
 	std::string tempPath = targetPath + "_";
 
 	{
 		BuildContext* builder = buildStart(output, tempPath.c_str(), files.size());
-		if (!builder) return;
+		if (!builder) return false;
 
 		// Use parallel read-ahead for better I/O throughput
 		unsigned int numReaders = std::max(2u, std::thread::hardware_concurrency() / 2);
@@ -909,6 +912,7 @@ void buildProject(Output* output, const char* path)
 		for (unsigned int i = 0; i < numReaders; ++i)
 			readers.emplace_back(&ReadAheadBuffer::readerThread, &readAhead);
 
+		bool success = true;
 		// Consume files in order
 		for (size_t i = 0; i < files.size(); ++i)
 		{
@@ -919,6 +923,12 @@ void buildProject(Output* output, const char* path)
 					contents.empty() ? nullptr : &contents[0], contents.size(),
 					files[i].transform, files[i].timeStamp, files[i].fileSize, &contents);
 			}
+			else
+			{
+				output->error("Error reading file %s: %s\n", files[i].path.c_str(), readAhead.files[i].errorMessage.c_str());
+				success = false;
+				break;
+			}
 		}
 
 		readAhead.stop();
@@ -926,13 +936,18 @@ void buildProject(Output* output, const char* path)
 			t.join();
 
 		buildFinish(builder);
+		if (!success) { removeFile(tempPath.c_str()); return false; }
 	}
 
 	output->print("\n");
 
+	if (!buildFiles(output, path, files)) { removeFile(tempPath.c_str()); return false; }
 	if (!renameFile(tempPath.c_str(), targetPath.c_str()))
 	{
 		output->error("Error saving data file %s\n", targetPath.c_str());
-		return;
+		return false;
 	}
+	removeFile(replaceExtension(path, ".qgc").c_str());
+	buildReportInputCoverage(output, files);
+	return true;
 }

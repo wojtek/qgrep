@@ -3,12 +3,14 @@
 
 #include <string>
 #include <vector>
+#include <algorithm>
 
 #include <stdint.h>
 #include <string.h>
 
 namespace
 {
+
 struct JsonCursor
 {
 	const char* p;
@@ -298,6 +300,70 @@ struct JsonPiece
 	std::string text;
 };
 
+// Key whitelist for tool input/arguments extraction.
+// Only these keys are indexed — everything else is skipped to keep the index small.
+static bool isIndexableToolKey(const std::string& key)
+{
+	return key == "file_path"
+		|| key == "path"
+		|| key == "command"
+		|| key == "description"
+		|| key == "pattern"
+		|| key == "query"
+		|| key == "prompt"
+		|| key == "skill"
+		|| key == "cmd"       // Codex exec_command
+		|| key == "workdir"   // Codex exec_command
+		|| key == "message";  // Codex spawn_agent
+}
+
+// Collect whitelisted string values from a flat JSON object (for tool input/arguments extraction).
+// Only extracts keys that pass isIndexableToolKey; skips everything else.
+static bool collectShortStringFields(JsonCursor& c, std::vector<std::string>& values)
+{
+	if (!consume(c, '{')) return false;
+
+	skipWhitespace(c);
+	if (consume(c, '}')) return true;
+
+	std::string key;
+
+	for (;;)
+	{
+		skipWhitespace(c);
+		if (!parseJsonString(c, key)) return false;
+		skipWhitespace(c);
+		if (!consume(c, ':')) return false;
+		skipWhitespace(c);
+
+		if (c.p < c.end && *c.p == '"' && isIndexableToolKey(key))
+		{
+			std::string val;
+			if (!parseJsonString(c, val)) return false;
+			if (!val.empty())
+			{
+				// Flatten newlines for single-line searchability
+				for (size_t i = 0; i < val.size(); ++i)
+					if (val[i] == '\n' || val[i] == '\r')
+						val[i] = ' ';
+				values.push_back(std::move(val));
+			}
+		}
+		else
+		{
+			if (!skipValue(c)) return false;
+		}
+
+		skipWhitespace(c);
+		if (consume(c, '}')) break;
+		if (!consume(c, ',')) return false;
+	}
+
+	return true;
+}
+
+// Parse a content item object from the content array.
+// Handles: text, output_text (Codex), thinking, tool_use (Claude).
 static bool parseContentItemObject(JsonCursor& c, std::vector<JsonPiece>& pieces)
 {
 	if (!consume(c, '{')) return false;
@@ -306,6 +372,8 @@ static bool parseContentItemObject(JsonCursor& c, std::vector<JsonPiece>& pieces
 	std::string type;
 	std::string text;
 	std::string thinking;
+	std::string toolName;
+	std::vector<std::string> toolFields;
 
 	for (;;)
 	{
@@ -329,6 +397,30 @@ static bool parseContentItemObject(JsonCursor& c, std::vector<JsonPiece>& pieces
 		{
 			if (!parseJsonString(c, thinking)) return false;
 		}
+		else if (key == "name")
+		{
+			// Tool name for tool_use content items
+			if (c.p < c.end && *c.p == '"')
+			{
+				if (!parseJsonString(c, toolName)) return false;
+			}
+			else
+			{
+				if (!skipValue(c)) return false;
+			}
+		}
+		else if (key == "input")
+		{
+			// Tool input object for tool_use content items
+			if (c.p < c.end && *c.p == '{')
+			{
+				if (!collectShortStringFields(c, toolFields)) return false;
+			}
+			else
+			{
+				if (!skipValue(c)) return false;
+			}
+		}
 		else
 		{
 			if (!skipValue(c)) return false;
@@ -340,7 +432,7 @@ static bool parseContentItemObject(JsonCursor& c, std::vector<JsonPiece>& pieces
 		if (!consume(c, ',')) return false;
 	}
 
-	if (type == "text")
+	if (type == "text" || type == "output_text")
 	{
 		if (!text.empty())
 			pieces.push_back({ false, std::move(text) });
@@ -349,6 +441,24 @@ static bool parseContentItemObject(JsonCursor& c, std::vector<JsonPiece>& pieces
 	{
 		if (!thinking.empty())
 			pieces.push_back({ true, std::move(thinking) });
+	}
+	else if (type == "tool_use")
+	{
+		// Emit tool invocation arguments as searchable text.
+		// Format: [tool:ToolName] field1 | field2 | ...
+		if (!toolName.empty() && !toolFields.empty())
+		{
+			std::string line = "[tool:" + toolName + "]";
+			for (size_t i = 0; i < toolFields.size(); ++i)
+			{
+				if (i > 0)
+					line += " | ";
+				else
+					line += " ";
+				line += toolFields[i];
+			}
+			pieces.push_back({ false, std::move(line) });
+		}
 	}
 
 	return true;
@@ -412,6 +522,7 @@ static bool parseContentValue(JsonCursor& c, std::vector<JsonPiece>& pieces)
 	return skipValue(c);
 }
 
+// Parse Claude's message object: {"role": "...", "content": ...}
 static bool parseMessageObject(JsonCursor& c, std::string& role, std::vector<JsonPiece>& pieces)
 {
 	skipWhitespace(c);
@@ -456,6 +567,169 @@ static bool parseMessageObject(JsonCursor& c, std::string& role, std::vector<Jso
 	return true;
 }
 
+// Parse Codex payload object.
+// Handles: message (assistant text), function_call (tool invocation),
+// user_message, agent_message. Skips function_call_output and reasoning.
+static bool parseCodexPayload(JsonCursor& c, std::string& role, std::vector<JsonPiece>& pieces, bool& hasContent)
+{
+	skipWhitespace(c);
+	if (c.p >= c.end) return false;
+	if (*c.p != '{') return skipValue(c);
+
+	consume(c, '{');
+
+	std::string key;
+	std::string payloadType;
+	std::string payloadRole;
+	std::string payloadName;
+	std::string payloadArguments;
+	std::string payloadMessage;
+	std::vector<JsonPiece> contentPieces;
+
+	for (;;)
+	{
+		skipWhitespace(c);
+		if (consume(c, '}')) break;
+
+		if (!parseJsonString(c, key)) return false;
+		skipWhitespace(c);
+		if (!consume(c, ':')) return false;
+		skipWhitespace(c);
+
+		if (key == "type")
+		{
+			if (c.p < c.end && *c.p == '"')
+			{
+				if (!parseJsonString(c, payloadType)) return false;
+			}
+			else
+			{
+				if (!skipValue(c)) return false;
+			}
+		}
+		else if (key == "role")
+		{
+			if (c.p < c.end && *c.p == '"')
+			{
+				if (!parseJsonString(c, payloadRole)) return false;
+			}
+			else
+			{
+				if (!skipValue(c)) return false;
+			}
+		}
+		else if (key == "name")
+		{
+			if (c.p < c.end && *c.p == '"')
+			{
+				if (!parseJsonString(c, payloadName)) return false;
+			}
+			else
+			{
+				if (!skipValue(c)) return false;
+			}
+		}
+		else if (key == "arguments")
+		{
+			// Codex stores arguments as a JSON-encoded string
+			if (c.p < c.end && *c.p == '"')
+			{
+				if (!parseJsonString(c, payloadArguments)) return false;
+			}
+			else
+			{
+				if (!skipValue(c)) return false;
+			}
+		}
+		else if (key == "message")
+		{
+			// user_message/agent_message payload.message is a string
+			if (c.p < c.end && *c.p == '"')
+			{
+				if (!parseJsonString(c, payloadMessage)) return false;
+			}
+			else
+			{
+				if (!skipValue(c)) return false;
+			}
+		}
+		else if (key == "content")
+		{
+			// message payload has content array with output_text items
+			if (!parseContentValue(c, contentPieces)) return false;
+		}
+		else
+		{
+			if (!skipValue(c)) return false;
+		}
+
+		skipWhitespace(c);
+		if (consume(c, '}')) break;
+		if (!consume(c, ',')) return false;
+	}
+
+	// Dispatch based on Codex payload type
+	if (payloadType == "message")
+	{
+		// Codex assistant/developer message with content array
+		role = payloadRole;
+		for (auto& p : contentPieces)
+			pieces.push_back(std::move(p));
+		hasContent = true;
+	}
+	else if (payloadType == "function_call")
+	{
+		// Codex tool invocation: double-parse arguments JSON string
+		role = "assistant";
+
+		if (!payloadName.empty())
+		{
+			std::vector<std::string> argFields;
+
+			if (!payloadArguments.empty())
+			{
+				JsonCursor ac = { payloadArguments.data(), payloadArguments.data() + payloadArguments.size() };
+				skipWhitespace(ac);
+				if (ac.p < ac.end && *ac.p == '{')
+					collectShortStringFields(ac, argFields);
+			}
+
+			if (!argFields.empty())
+			{
+				std::string line = "[tool:" + payloadName + "]";
+				for (size_t i = 0; i < argFields.size(); ++i)
+				{
+					if (i > 0)
+						line += " | ";
+					else
+						line += " ";
+					line += argFields[i];
+				}
+				pieces.push_back({ false, std::move(line) });
+			}
+		}
+
+		hasContent = true;
+	}
+	else if (payloadType == "user_message")
+	{
+		role = "user";
+		if (!payloadMessage.empty())
+			pieces.push_back({ false, std::move(payloadMessage) });
+		hasContent = true;
+	}
+	else if (payloadType == "agent_message")
+	{
+		role = "assistant";
+		if (!payloadMessage.empty())
+			pieces.push_back({ false, std::move(payloadMessage) });
+		hasContent = true;
+	}
+	// Skip: function_call_output (bulk stdout), reasoning (encrypted), etc.
+
+	return true;
+}
+
 static bool parseTopObject(JsonCursor& c, std::string& role, std::vector<JsonPiece>& pieces, bool& hasMessage)
 {
 	skipWhitespace(c);
@@ -477,8 +751,14 @@ static bool parseTopObject(JsonCursor& c, std::string& role, std::vector<JsonPie
 
 		if (key == "message")
 		{
+			// Claude Code: top-level "message" object with role + content
 			if (!parseMessageObject(c, role, pieces)) return false;
 			hasMessage = true;
+		}
+		else if (key == "payload")
+		{
+			// Codex CLI: top-level "payload" object (function_call, message, etc.)
+			if (!parseCodexPayload(c, role, pieces, hasMessage)) return false;
 		}
 		else
 		{
@@ -619,7 +899,401 @@ static std::vector<char> transformJsonl(const char* data, size_t size)
 
 	return std::vector<char>(out.begin(), out.end());
 }
+
+// --- Gemini session JSON transform ---
+
+// Parse Gemini content field: a string, or an array of strings / {"text":"..."} objects.
+static bool parseGeminiContent(JsonCursor& c, std::string& content)
+{
+	skipWhitespace(c);
+	if (c.p >= c.end) return false;
+
+	if (*c.p == '"')
+		return parseJsonString(c, content);
+
+	if (*c.p == '[')
+	{
+		if (!consume(c, '[')) return false;
+		skipWhitespace(c);
+		if (consume(c, ']')) return true;
+
+		for (;;)
+		{
+			skipWhitespace(c);
+			if (c.p >= c.end) return false;
+
+			if (*c.p == '"')
+			{
+				std::string text;
+				if (!parseJsonString(c, text)) return false;
+				if (!text.empty())
+				{
+					if (!content.empty()) content.push_back('\n');
+					content.append(text);
+				}
+			}
+			else if (*c.p == '{')
+			{
+				consume(c, '{');
+				std::string key;
+				for (;;)
+				{
+					skipWhitespace(c);
+					if (consume(c, '}')) break;
+					if (!parseJsonString(c, key)) return false;
+					skipWhitespace(c);
+					if (!consume(c, ':')) return false;
+					skipWhitespace(c);
+					if (key == "text" && c.p < c.end && *c.p == '"')
+					{
+						std::string text;
+						if (!parseJsonString(c, text)) return false;
+						if (!text.empty())
+						{
+							if (!content.empty()) content.push_back('\n');
+							content.append(text);
+						}
+					}
+					else
+					{
+						if (!skipValue(c)) return false;
+					}
+					skipWhitespace(c);
+					if (consume(c, '}')) break;
+					if (!consume(c, ',')) return false;
+				}
+			}
+			else
+			{
+				if (!skipValue(c)) return false;
+			}
+
+			skipWhitespace(c);
+			if (consume(c, ']')) break;
+			if (!consume(c, ',')) return false;
+		}
+		return true;
+	}
+
+	return skipValue(c);
+}
+
+// Parse Gemini thoughts array: [{"subject":"...", "description":"...", ...}, ...]
+static bool parseGeminiThoughts(JsonCursor& c, std::vector<std::string>& descriptions)
+{
+	if (!consume(c, '[')) return false;
+	skipWhitespace(c);
+	if (consume(c, ']')) return true;
+
+	for (;;)
+	{
+		skipWhitespace(c);
+		if (c.p >= c.end) return false;
+
+		if (*c.p == '{')
+		{
+			consume(c, '{');
+			std::string key, desc;
+			for (;;)
+			{
+				skipWhitespace(c);
+				if (consume(c, '}')) break;
+				if (!parseJsonString(c, key)) return false;
+				skipWhitespace(c);
+				if (!consume(c, ':')) return false;
+				skipWhitespace(c);
+				if (key == "description" && c.p < c.end && *c.p == '"')
+				{
+					if (!parseJsonString(c, desc)) return false;
+				}
+				else
+				{
+					if (!skipValue(c)) return false;
+				}
+				skipWhitespace(c);
+				if (consume(c, '}')) break;
+				if (!consume(c, ',')) return false;
+			}
+			if (!desc.empty())
+				descriptions.push_back(std::move(desc));
+		}
+		else
+		{
+			if (!skipValue(c)) return false;
+		}
+
+		skipWhitespace(c);
+		if (consume(c, ']')) break;
+		if (!consume(c, ',')) return false;
+	}
+	return true;
+}
+
+// Parse a single Gemini tool call: {name, args, result(skip), resultDisplay(skip), ...}
+static bool parseGeminiToolCall(JsonCursor& c, std::vector<JsonPiece>& pieces)
+{
+	if (!consume(c, '{')) return false;
+
+	std::string key, toolName;
+	std::vector<std::string> argFields;
+
+	for (;;)
+	{
+		skipWhitespace(c);
+		if (consume(c, '}')) break;
+		if (!parseJsonString(c, key)) return false;
+		skipWhitespace(c);
+		if (!consume(c, ':')) return false;
+		skipWhitespace(c);
+
+		if (key == "name" && c.p < c.end && *c.p == '"')
+		{
+			if (!parseJsonString(c, toolName)) return false;
+		}
+		else if (key == "args" && c.p < c.end && *c.p == '{')
+		{
+			if (!collectShortStringFields(c, argFields)) return false;
+		}
+		else
+		{
+			// Skip result, resultDisplay, functionResponse, status, etc.
+			if (!skipValue(c)) return false;
+		}
+
+		skipWhitespace(c);
+		if (consume(c, '}')) break;
+		if (!consume(c, ',')) return false;
+	}
+
+	if (!toolName.empty() && !argFields.empty())
+	{
+		std::string line = "[tool:" + toolName + "]";
+		for (size_t i = 0; i < argFields.size(); ++i)
+		{
+			if (i > 0)
+				line += " | ";
+			else
+				line += " ";
+			line += argFields[i];
+		}
+		pieces.push_back({false, std::move(line)});
+	}
+
+	return true;
+}
+
+// Parse Gemini toolCalls array
+static bool parseGeminiToolCalls(JsonCursor& c, std::vector<JsonPiece>& pieces)
+{
+	if (!consume(c, '[')) return false;
+	skipWhitespace(c);
+	if (consume(c, ']')) return true;
+
+	for (;;)
+	{
+		skipWhitespace(c);
+		if (c.p >= c.end) return false;
+
+		if (*c.p == '{')
+		{
+			if (!parseGeminiToolCall(c, pieces)) return false;
+		}
+		else
+		{
+			if (!skipValue(c)) return false;
+		}
+
+		skipWhitespace(c);
+		if (consume(c, ']')) break;
+		if (!consume(c, ',')) return false;
+	}
+	return true;
+}
+
+// Parse a single Gemini message and append extracted text to out.
+static bool parseGeminiMessage(JsonCursor& c, std::string& out)
+{
+	if (c.p >= c.end || *c.p != '{')
+		return skipValue(c);
+
+	consume(c, '{');
+
+	std::string key, type, content;
+	std::vector<std::string> thoughtDescs;
+	std::vector<JsonPiece> toolPieces;
+
+	for (;;)
+	{
+		skipWhitespace(c);
+		if (consume(c, '}')) break;
+
+		if (!parseJsonString(c, key)) return false;
+		skipWhitespace(c);
+		if (!consume(c, ':')) return false;
+		skipWhitespace(c);
+
+		if (key == "type" && c.p < c.end && *c.p == '"')
+		{
+			if (!parseJsonString(c, type)) return false;
+		}
+		else if (key == "content")
+		{
+			if (!parseGeminiContent(c, content)) return false;
+		}
+		else if (key == "thoughts" && c.p < c.end && *c.p == '[')
+		{
+			if (!parseGeminiThoughts(c, thoughtDescs)) return false;
+		}
+		else if (key == "toolCalls" && c.p < c.end && *c.p == '[')
+		{
+			if (!parseGeminiToolCalls(c, toolPieces)) return false;
+		}
+		else
+		{
+			if (!skipValue(c)) return false;
+		}
+
+		skipWhitespace(c);
+		if (consume(c, '}')) break;
+		if (!consume(c, ',')) return false;
+	}
+
+	bool isUser = (type == "user");
+	bool isGemini = (type == "gemini");
+	if (!isUser && !isGemini) return true;
+
+	// Output content
+	if (!content.empty())
+	{
+		std::string text = content;
+		stripAnsiInPlace(text);
+		appendWithNewline(out, text);
+	}
+
+	// Output thoughts (gemini messages only)
+	if (isGemini)
+	{
+		for (auto& desc : thoughtDescs)
+		{
+			std::string text = desc;
+			stripAnsiInPlace(text);
+			if (!text.empty())
+			{
+				std::string marked = "[thinking] " + text;
+				appendWithNewline(out, marked);
+			}
+		}
+	}
+
+	// Output tool call info
+	for (auto& piece : toolPieces)
+		appendPiece(out, piece, isGemini);
+
+	return true;
+}
+
+// Parse the messages array from a Gemini session file.
+static bool parseGeminiMessagesArray(JsonCursor& c, std::string& out)
+{
+	if (!consume(c, '[')) return false;
+	skipWhitespace(c);
+	if (consume(c, ']')) return true;
+
+	for (;;)
+	{
+		skipWhitespace(c);
+		if (!parseGeminiMessage(c, out)) return false;
+		skipWhitespace(c);
+		if (consume(c, ']')) break;
+		if (!consume(c, ',')) return false;
+	}
+	return true;
+}
+
+static std::vector<char> transformGemini(const char* data, size_t size)
+{
+	std::string out;
+	out.reserve(size / 4);
+
+	JsonCursor c = {data, data + size};
+
+	// Skip BOM if present
+	if (size >= 3 && static_cast<unsigned char>(data[0]) == 0xef &&
+		static_cast<unsigned char>(data[1]) == 0xbb &&
+		static_cast<unsigned char>(data[2]) == 0xbf)
+	{
+		c.p += 3;
+	}
+
+	skipWhitespace(c);
+	if (c.p >= c.end || *c.p != '{')
+		return std::vector<char>(out.begin(), out.end());
+
+	consume(c, '{');
+
+	std::string key;
+
+	for (;;)
+	{
+		skipWhitespace(c);
+		if (consume(c, '}')) break;
+
+		if (!parseJsonString(c, key)) break;
+		skipWhitespace(c);
+		if (!consume(c, ':')) break;
+		skipWhitespace(c);
+
+		if (key == "messages" && c.p < c.end && *c.p == '[')
+		{
+			parseGeminiMessagesArray(c, out);
+			break; // messages is all we need
+		}
+		else
+		{
+			if (!skipValue(c)) break;
+		}
+
+		skipWhitespace(c);
+		if (consume(c, '}')) break;
+		if (!consume(c, ',')) break;
+	}
+
+	return std::vector<char>(out.begin(), out.end());
+}
 } // namespace
+
+void JsonlTransformStream::append(const char* data, size_t size)
+{
+	while (size)
+	{
+		if (skipLF)
+		{
+			skipLF = false;
+			if (*data == '\n') { ++data; --size; continue; }
+		}
+		const char* lf = static_cast<const char*>(memchr(data, '\n', size));
+		const char* cr = static_cast<const char*>(memchr(data, '\r', size));
+		const char* end = lf && cr ? std::min(lf, cr) : lf ? lf : cr;
+		if (!end)
+		{
+			pending.append(data, size);
+			break;
+		}
+		pending.append(data, end - data);
+		processJsonlLine(pending.data(), pending.size(), output);
+		pending.clear();
+		skipLF = *end == '\r';
+		size -= end - data + 1;
+		data = end + 1;
+	}
+}
+
+std::vector<char> JsonlTransformStream::finish()
+{
+	processJsonlLine(pending.data(), pending.size(), output);
+	pending.clear();
+	return std::vector<char>(output.begin(), output.end());
+}
 
 std::vector<char> applyTransform(TransformKind transform, std::vector<char> data)
 {
@@ -632,6 +1306,14 @@ std::vector<char> applyTransform(TransformKind transform, std::vector<char> data
 			return data;
 
 		return transformJsonl(&data[0], data.size());
+	}
+
+	if (transform == TRANSFORM_GEMINI)
+	{
+		if (data.empty())
+			return data;
+
+		return transformGemini(&data[0], data.size());
 	}
 
 	return data;

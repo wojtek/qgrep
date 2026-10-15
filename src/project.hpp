@@ -11,7 +11,11 @@ class Regex;
 enum TransformKind
 {
 	TRANSFORM_NONE = 0,
-	TRANSFORM_JSONL = 1
+	TRANSFORM_JSONL = 1,
+	TRANSFORM_GEMINI = 2,
+	// Same JSONL selection, decoded from Zstd. Existing file metadata records
+	// this identity so an old undecoded/empty entry is never reused as current.
+	TRANSFORM_JSONL_ZSTD = 3
 };
 
 std::string getProjectPath(const char* name);
