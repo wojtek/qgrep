@@ -14,11 +14,11 @@ enum TransformKind
 	// 1/3 are the legacy JSONL identities, without completed Codex messages.
 	// The project header also versions the content contract: incompatible
 	// producers require an explicit canonical rebuild, never update migration.
-	TRANSFORM_JSONL = 4,
+	TRANSFORM_JSONL = 6,
 	TRANSFORM_GEMINI = 2,
 	// Same JSONL selection, decoded from Zstd. Existing file metadata records
 	// this identity so an old undecoded/empty entry is never reused as current.
-	TRANSFORM_JSONL_ZSTD = 5
+	TRANSFORM_JSONL_ZSTD = 7
 };
 
 std::string getProjectPath(const char* name);

@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <initializer_list>
 
 #include <stdint.h>
 #include <string.h>
@@ -916,6 +917,160 @@ static void appendPiece(std::string& out, const JsonPiece& piece, bool allowThin
 	}
 }
 
+// A conservative record predicate, mirrored by codex_storage.py. Text-envelope
+// recognition alone must never discard mixed/quoted messages or unknown fields.
+typedef std::vector<std::pair<std::string, JsonCursor>> JsonFields;
+
+static bool startupFields(JsonCursor c, JsonFields& fields, std::initializer_list<const char*> allowed)
+{
+	skipWhitespace(c);
+	if (!consume(c, '{')) return false;
+	for (;;)
+	{
+		skipWhitespace(c);
+		if (consume(c, '}')) break;
+		std::string key;
+		if (!parseJsonString(c, key)) return false;
+		if (std::none_of(allowed.begin(), allowed.end(), [&key](const char* name) { return key == name; })) return false;
+		for (const auto& field: fields) if (field.first == key) return false;
+		skipWhitespace(c);
+		if (!consume(c, ':')) return false;
+		skipWhitespace(c);
+		const char* start = c.p;
+		if (!skipValue(c)) return false;
+		fields.push_back({key, {start, c.p}});
+		skipWhitespace(c);
+		if (consume(c, '}')) break;
+		if (!consume(c, ',')) return false;
+	}
+	skipWhitespace(c);
+	return c.p == c.end;
+}
+
+static const JsonCursor* startupField(const JsonFields& fields, const char* name)
+{
+	for (const auto& field: fields) if (field.first == name) return &field.second;
+	return nullptr;
+}
+
+static bool startupString(const JsonCursor* value, std::string& text)
+{
+	if (!value) return false;
+	JsonCursor c = *value;
+	return parseJsonString(c, text) && c.p == c.end;
+}
+
+static bool startupStringEquals(const JsonFields& fields, const char* name, const char* expected)
+{
+	std::string text;
+	return startupString(startupField(fields, name), text) && text == expected;
+}
+
+static bool startupOptionalString(const JsonFields& fields, const char* name, bool nonempty = true)
+{
+	const JsonCursor* value = startupField(fields, name);
+	std::string text;
+	return !value || (startupString(value, text) && (!nonempty || !text.empty()));
+}
+
+static bool startupEnvelope(const std::string& text, const char* start, const char* end)
+{
+	size_t suffix = strlen(end);
+	return text.compare(0, strlen(start), start) == 0 && text.size() >= suffix &&
+		text.compare(text.size() - suffix, suffix, end) == 0;
+}
+
+static bool startupSingleEnvelope(const std::string& text, const char* opening, const char* closing)
+{
+	size_t firstOpen = text.find(opening), firstClose = text.find(closing);
+	return firstOpen != std::string::npos && firstClose != std::string::npos &&
+		text.find(opening, firstOpen + strlen(opening)) == std::string::npos &&
+		text.find(closing, firstClose + strlen(closing)) == std::string::npos;
+}
+
+static bool isStandaloneStartupRecord(const char* line, size_t length)
+{
+	JsonFields record;
+	if (!startupFields({line, line + length}, record, {"timestamp", "ordinal", "type", "payload"}) ||
+		!startupStringEquals(record, "type", "response_item") || !startupOptionalString(record, "timestamp", false)) return false;
+	if (const JsonCursor* ordinal = startupField(record, "ordinal"))
+	{
+		if (ordinal->p == ordinal->end) return false;
+		// JSON's integer -0 decodes to the same nonnegative integer as 0.
+		const char* digits = ordinal->p;
+		if (*digits == '-')
+		{
+			if (ordinal->end - digits != 2 || digits[1] != '0') return false;
+			++digits;
+		}
+		for (const char* p = digits; p < ordinal->end; ++p) if (*p < '0' || *p > '9') return false;
+	}
+	const JsonCursor* value = startupField(record, "payload");
+	JsonFields payload;
+	if (!value || !startupFields(*value, payload, {"type", "id", "role", "content", "internal_chat_message_metadata_passthrough"}) ||
+		!startupStringEquals(payload, "type", "message") || !startupStringEquals(payload, "role", "user") ||
+		!startupOptionalString(payload, "id")) return false;
+	value = startupField(payload, "content");
+	if (!value) return false;
+	JsonCursor c = *value;
+	if (!consume(c, '[')) return false;
+	std::vector<std::string> parts;
+	for (;;)
+	{
+		skipWhitespace(c);
+		const char* start = c.p;
+		if (!skipValue(c)) return false;
+		JsonFields part;
+		std::string text;
+		if (!startupFields({start, c.p}, part, {"type", "text"}) || part.size() != 2 ||
+			!startupStringEquals(part, "type", "input_text") || !startupString(startupField(part, "text"), text)) return false;
+		std::replace(text.begin(), text.end(), '\r', '\n');
+		size_t first = text.find_first_not_of(" \t\r\n"), last = text.find_last_not_of(" \t\r\n");
+		parts.push_back(first == std::string::npos ? "" : text.substr(first, last - first + 1));
+		if (parts.size() > 3) return false;
+		skipWhitespace(c);
+		if (consume(c, ']')) break;
+		if (!consume(c, ',')) return false;
+	}
+	if (c.p != c.end || (parts.size() != 2 && parts.size() != 3)) return false;
+	const std::string& instructions = parts[parts.size() - 2];
+	const std::string& environment = parts.back();
+	const char* heading = "# AGENTS.md instructions for ";
+	size_t headerEnd = instructions.find('\n');
+	if (instructions.compare(0, strlen(heading), heading) != 0 || headerEnd == std::string::npos ||
+		headerEnd <= strlen(heading) || instructions.substr(0, headerEnd).find('\r') != std::string::npos ||
+		instructions.compare(headerEnd, strlen("\n\n<INSTRUCTIONS>\n"), "\n\n<INSTRUCTIONS>\n") != 0 ||
+		!startupEnvelope(instructions, heading, "\n</INSTRUCTIONS>") ||
+		!startupEnvelope(environment, "<environment_context>\n", "\n</environment_context>")) return false;
+	if (parts.size() == 3 && !startupEnvelope(parts[0], "<recommended_plugins>\n", "\n</recommended_plugins>")) return false;
+	if (!startupSingleEnvelope(instructions, "<INSTRUCTIONS>", "</INSTRUCTIONS>") ||
+		!startupSingleEnvelope(environment, "<environment_context>", "</environment_context>") ||
+		(parts.size() == 3 && !startupSingleEnvelope(parts[0], "<recommended_plugins>", "</recommended_plugins>"))) return false;
+	if (const JsonCursor* metadata = startupField(payload, "internal_chat_message_metadata_passthrough"))
+	{
+		JsonFields fields;
+		if (!startupFields(*metadata, fields, {"turn_id", "create_time", "content_item_kinds"}) ||
+			!startupOptionalString(fields, "turn_id")) return false;
+		if (const JsonCursor* created = startupField(fields, "create_time"))
+			if (created->p == created->end || (*created->p != '-' && (*created->p < '0' || *created->p > '9'))) return false;
+		if (const JsonCursor* kinds = startupField(fields, "content_item_kinds"))
+		{
+			JsonCursor k = *kinds;
+			std::string first, second;
+			if (parts.size() != 2 || !consume(k, '[')) return false;
+			skipWhitespace(k);
+			if (!parseJsonString(k, first)) return false;
+			skipWhitespace(k);
+			if (!consume(k, ',')) return false;
+			skipWhitespace(k);
+			if (!parseJsonString(k, second)) return false;
+			skipWhitespace(k);
+			if (!consume(k, ']') || k.p != k.end || first != "agents_md.instructions" || second != "environments.environment_context") return false;
+		}
+	}
+	return true;
+}
+
 static void processJsonlLine(const char* line, size_t length, std::string& out)
 {
 	if (length == 0) return;
@@ -943,6 +1098,16 @@ static void processJsonlLine(const char* line, size_t length, std::string& out)
 	bool isAssistant = (role == "assistant");
 
 	if (!isUser && !isAssistant) return;
+	// Most records need no second parse. Only a possible standalone startup
+	// message reaches the strict full-record predicate.
+	if (isUser && (pieces.size() == 2 || pieces.size() == 3))
+	{
+		size_t first = pieces[0].text.find_first_not_of(" \t\r\n");
+		if (first != std::string::npos &&
+			(pieces[0].text.compare(first, strlen("# AGENTS.md instructions"), "# AGENTS.md instructions") == 0 ||
+			 pieces[0].text.compare(first, strlen("<recommended_plugins>"), "<recommended_plugins>") == 0) &&
+			isStandaloneStartupRecord(line, length)) return;
+	}
 
 	for (size_t i = 0; i < pieces.size(); ++i)
 		appendPiece(out, pieces[i], isAssistant);

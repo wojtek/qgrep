@@ -875,7 +875,7 @@ void buildReportInputCoverage(Output* output, const std::vector<FileInfo>& files
 	for (const auto& file: files) if (file.transform == TRANSFORM_JSONL_ZSTD) ++compressed;
 	for (const auto& file: files) if (file.transform == TRANSFORM_JSONL || file.transform == TRANSFORM_JSONL_ZSTD) ++jsonl;
 	output->print("Content coverage: jsonl-zstd-v1 files=%u\n", compressed);
-	output->print("Content coverage: jsonl-discussion-v2 files=%u\n", jsonl);
+	output->print("Content coverage: jsonl-discussion-v3 files=%u\n", jsonl);
 }
 
 bool buildProject(Output* output, const char* path)
