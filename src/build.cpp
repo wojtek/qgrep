@@ -624,7 +624,7 @@ static void writeChunkThreadFun(BuildContext* context)
 	}
 }
 
-BuildContext* buildStart(Output* output, const char* path, unsigned int fileCount)
+BuildContext* buildStart(Output* output, const char* path, unsigned int fileCount, const char* dataFileMagic)
 {
 	std::unique_ptr<BuildContext> context(new BuildContext(output, fileCount));
 
@@ -638,7 +638,7 @@ BuildContext* buildStart(Output* output, const char* path, unsigned int fileCoun
 	}
 
 	DataFileHeader header = {};
-	memcpy(header.magic, kDataFileHeaderMagic, sizeof(header.magic));
+	memcpy(header.magic, dataFileMagic, sizeof(header.magic));
 
 	context->outData.write(&header, sizeof(header));
 
@@ -871,8 +871,11 @@ struct ReadAheadBuffer
 void buildReportInputCoverage(Output* output, const std::vector<FileInfo>& files)
 {
 	unsigned int compressed = 0;
+	unsigned int jsonl = 0;
 	for (const auto& file: files) if (file.transform == TRANSFORM_JSONL_ZSTD) ++compressed;
+	for (const auto& file: files) if (file.transform == TRANSFORM_JSONL || file.transform == TRANSFORM_JSONL_ZSTD) ++jsonl;
 	output->print("Content coverage: jsonl-zstd-v1 files=%u\n", compressed);
+	output->print("Content coverage: jsonl-discussion-v2 files=%u\n", jsonl);
 }
 
 bool buildProject(Output* output, const char* path)
@@ -891,7 +894,7 @@ bool buildProject(Output* output, const char* path)
 	std::string tempPath = targetPath + "_";
 
 	{
-		BuildContext* builder = buildStart(output, tempPath.c_str(), files.size());
+		BuildContext* builder = buildStart(output, tempPath.c_str(), files.size(), getProjectDataFileMagic(group.get()));
 		if (!builder) return false;
 
 		// Use parallel read-ahead for better I/O throughput

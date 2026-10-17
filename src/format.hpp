@@ -1,5 +1,6 @@
 // This file is part of qgrep and is distributed under the MIT license, see LICENSE.md
 #pragma once
+#include <string.h>
 
 const char kFileFileHeaderMagic[] = "QGF0";
 
@@ -25,6 +26,14 @@ struct FileFileEntry
 };
 
 const char kDataFileHeaderMagic[] = "QGD2";
+// The physical layout is unchanged; JSONL content semantics are incompatible
+// with producers that omit completed Codex messages. Ordinary indexes stay QGD2.
+const char kJsonlDataFileHeaderMagic[] = "QGD3";
+
+inline bool isKnownDataFileHeader(const char* magic)
+{
+	return memcmp(magic, kDataFileHeaderMagic, 4) == 0 || memcmp(magic, kJsonlDataFileHeaderMagic, 4) == 0;
+}
 
 struct DataFileHeader
 {

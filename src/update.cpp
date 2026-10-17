@@ -173,16 +173,16 @@ static bool processChunkData(Output* output, BuildContext* builder, UpdateFileIt
 	return true;
 }
 
-static bool processFile(Output* output, BuildContext* builder, UpdateFileIterator& fileit, UpdateStatistics& stats, const char* path)
+static bool processFile(Output* output, BuildContext* builder, UpdateFileIterator& fileit, UpdateStatistics& stats, const char* path, const char* expectedMagic)
 {
 	FileStream in(path, "rb");
 	if (!in) return true;
 
 	DataFileHeader header;
-	if (!read(in, header) || memcmp(header.magic, kDataFileHeaderMagic, strlen(kDataFileHeaderMagic)) != 0)
+	if (!read(in, header) || memcmp(header.magic, expectedMagic, sizeof(header.magic)) != 0)
 	{
-		output->error("Warning: data file %s has an out of date format, rebuilding\n", path);
-		return true;
+		output->error("Incompatible qgrep index %s. Install the canonical qgrep from :elysium; explicitly rebuild with it if already installed.\n", path);
+		return false;
 	}
 
 	DataChunkHeader chunk;
@@ -223,6 +223,8 @@ static void printStatistics(Output* output, const UpdateStatistics& stats, unsig
 
 bool updateProject(Output* output, const char* path)
 {
+	// Validate before scanning, creating a temporary index, or changing sidecars.
+	requireCompatibleProjectIndex(output, path, true);
 	auto start = std::chrono::high_resolution_clock::now();
 
     output->print("Updating %s:\n", path);
@@ -242,14 +244,14 @@ bool updateProject(Output* output, const char* path)
 	unsigned int totalChunks = 0;
 
 	{
-		BuildContext* builder = buildStart(output, tempPath.c_str(), files.size());
+		BuildContext* builder = buildStart(output, tempPath.c_str(), files.size(), getProjectDataFileMagic(group.get()));
 		if (!builder)
 			return false;
 
 		UpdateFileIterator fileit = {files, 0};
 
 		// update contents using existing database (if any)
-		if (!processFile(output, builder, fileit, stats, targetPath.c_str()))
+		if (!processFile(output, builder, fileit, stats, targetPath.c_str(), getProjectDataFileMagic(group.get())))
 		{
 			buildFinish(builder);
 			removeFile(tempPath.c_str());

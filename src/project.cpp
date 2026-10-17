@@ -6,6 +6,8 @@
 #include "fileutil.hpp"
 #include "stringutil.hpp"
 #include "regex.hpp"
+#include "format.hpp"
+#include "filestream.hpp"
 
 #include <fstream>
 #include <memory>
@@ -294,6 +296,39 @@ static TransformKind getTransformForGroup(ProjectGroup* group)
 			return group->transform;
 
 	return TRANSFORM_NONE;
+}
+
+const char* getProjectDataFileMagic(ProjectGroup* group)
+{
+	TransformKind transform = getTransformForGroup(group);
+	if (transform == TRANSFORM_JSONL || transform == TRANSFORM_JSONL_ZSTD)
+		return kJsonlDataFileHeaderMagic;
+	for (auto& child: group->groups)
+		if (strcmp(getProjectDataFileMagic(child.get()), kJsonlDataFileHeaderMagic) == 0)
+			return kJsonlDataFileHeaderMagic;
+	return kDataFileHeaderMagic;
+}
+
+void requireCompatibleProjectIndex(Output* output, const char* path, bool allowMissing)
+{
+	std::unique_ptr<ProjectGroup> group = parseProject(output, path);
+	if (!group)
+		throw std::runtime_error("Cannot validate qgrep index without its project configuration");
+	std::string dataPath = replaceExtension(path, ".qgd");
+	FileStream in(dataPath.c_str(), "rb");
+	if (!in)
+	{
+		uint64_t mtime, size;
+		if (allowMissing && !getFileAttributes(dataPath.c_str(), &mtime, &size))
+			return;
+		throw std::runtime_error("Cannot read qgrep index " + dataPath);
+	}
+	DataFileHeader header;
+	const char* expected = getProjectDataFileMagic(group.get());
+	if (!read(in, header) || memcmp(header.magic, expected, sizeof(header.magic)) != 0)
+		throw std::runtime_error("Incompatible qgrep index " + dataPath + " (expected " + expected +
+			"). Install the canonical qgrep from :elysium (E:\\wojtek_elysium_tsunami\\agentx\\bin\\qgrep\\qgrep.exe). "
+			"If that binary is already installed, explicitly rebuild this index with it. Search/update never replace an incompatible index.");
 }
 
 bool isFileAcceptable(ProjectGroup* group, const char* path)

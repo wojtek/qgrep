@@ -37,7 +37,7 @@
 #include <chrono>
 #include <stdexcept>
 
-const char* kVersion = "1.3";
+const char* kVersion = "1.3-agentx-jsonl-v3";
 
 namespace re2 { bool RunningOnValgrind() { return false; } }
 
@@ -399,6 +399,14 @@ bool mainImpl(Output* output, int argc, const char** argv, const char* input, si
 {
 	try
 	{
+		// Check every selected project before any output or mutation. Explicit build
+		// is the deliberate replacement operation, never an implicit update fallback.
+		if (argc > 2 && (strcmp(argv[1], "search") == 0 || strcmp(argv[1], "files") == 0 ||
+			strcmp(argv[1], "update") == 0 || strcmp(argv[1], "change") == 0 ||
+			strcmp(argv[1], "watch") == 0 || strcmp(argv[1], "interactive") == 0 || strcmp(argv[1], "info") == 0))
+			for (auto& path: getProjectPaths(argv[2]))
+				requireCompatibleProjectIndex(output, path.c_str(), strcmp(argv[1], "update") == 0);
+
 		if (argc > 3 && strcmp(argv[1], "init") == 0)
 		{
 			initProject(output, argv[2], getProjectPath(argv[2]).c_str(), argv[3]);

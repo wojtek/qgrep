@@ -364,13 +364,14 @@ static bool collectShortStringFields(JsonCursor& c, std::vector<std::string>& va
 
 // Parse a content item object from the content array.
 // Handles: text, output_text (Codex), thinking, tool_use (Claude).
-static bool parseContentItemObject(JsonCursor& c, std::vector<JsonPiece>& pieces)
+static bool parseContentItemObject(JsonCursor& c, std::vector<JsonPiece>& pieces, const char* textType = nullptr)
 {
 	if (!consume(c, '{')) return false;
 
 	std::string key;
 	std::string type;
 	std::string text;
+	bool hasText = false;
 	std::string thinking;
 	std::string toolName;
 	std::vector<std::string> toolFields;
@@ -392,6 +393,7 @@ static bool parseContentItemObject(JsonCursor& c, std::vector<JsonPiece>& pieces
 		else if (key == "text")
 		{
 			if (!parseJsonString(c, text)) return false;
+			hasText = true;
 		}
 		else if (key == "thinking")
 		{
@@ -432,7 +434,12 @@ static bool parseContentItemObject(JsonCursor& c, std::vector<JsonPiece>& pieces
 		if (!consume(c, ',')) return false;
 	}
 
-	if (type == "text" || type == "output_text")
+	if (textType)
+	{
+		if (type == textType && hasText)
+			pieces.push_back({ false, std::move(text) });
+	}
+	else if (type == "text" || type == "output_text" || type == "input_text")
 	{
 		if (!text.empty())
 			pieces.push_back({ false, std::move(text) });
@@ -464,7 +471,7 @@ static bool parseContentItemObject(JsonCursor& c, std::vector<JsonPiece>& pieces
 	return true;
 }
 
-static bool parseContentArray(JsonCursor& c, std::vector<JsonPiece>& pieces)
+static bool parseContentArray(JsonCursor& c, std::vector<JsonPiece>& pieces, const char* textType = nullptr)
 {
 	if (!consume(c, '[')) return false;
 
@@ -479,13 +486,13 @@ static bool parseContentArray(JsonCursor& c, std::vector<JsonPiece>& pieces)
 
 		if (*c.p == '{')
 		{
-			if (!parseContentItemObject(c, pieces)) return false;
+			if (!parseContentItemObject(c, pieces, textType)) return false;
 		}
 		else if (*c.p == '"')
 		{
 			std::string text;
 			if (!parseJsonString(c, text)) return false;
-			if (!text.empty())
+			if (!textType && !text.empty())
 				pieces.push_back({ false, std::move(text) });
 		}
 		else
@@ -502,7 +509,7 @@ static bool parseContentArray(JsonCursor& c, std::vector<JsonPiece>& pieces)
 	return true;
 }
 
-static bool parseContentValue(JsonCursor& c, std::vector<JsonPiece>& pieces)
+static bool parseContentValue(JsonCursor& c, std::vector<JsonPiece>& pieces, const char* textType = nullptr)
 {
 	skipWhitespace(c);
 	if (c.p >= c.end) return false;
@@ -511,13 +518,13 @@ static bool parseContentValue(JsonCursor& c, std::vector<JsonPiece>& pieces)
 	{
 		std::string text;
 		if (!parseJsonString(c, text)) return false;
-		if (!text.empty())
+		if (!textType && !text.empty())
 			pieces.push_back({ false, std::move(text) });
 		return true;
 	}
 
 	if (*c.p == '[')
-		return parseContentArray(c, pieces);
+		return parseContentArray(c, pieces, textType);
 
 	return skipValue(c);
 }
@@ -567,6 +574,59 @@ static bool parseMessageObject(JsonCursor& c, std::string& role, std::vector<Jso
 	return true;
 }
 
+// Completed messages have different content tags from raw response messages.
+// Keep their text as one LF-joined piece, matching the visible message owner.
+static bool parseCompletedMessage(JsonCursor& c, std::string& role, std::vector<JsonPiece>& pieces)
+{
+	skipWhitespace(c);
+	if (c.p >= c.end) return false;
+	if (*c.p != '{') return skipValue(c);
+	consume(c, '{');
+	std::string key, type, text;
+	bool hasText = false;
+	JsonCursor content = { nullptr, nullptr };
+	for (;;)
+	{
+		skipWhitespace(c);
+		if (consume(c, '}')) break;
+		if (!parseJsonString(c, key)) return false;
+		skipWhitespace(c);
+		if (!consume(c, ':')) return false;
+		skipWhitespace(c);
+		if ((key == "type" || key == "text") && c.p < c.end && *c.p == '"')
+		{
+			if (!parseJsonString(c, key == "type" ? type : text)) return false;
+			if (key == "text") hasText = true;
+		}
+		else
+		{
+			const char* start = c.p;
+			if (!skipValue(c)) return false;
+			if (key == "content") content = { start, c.p };
+		}
+		skipWhitespace(c);
+		if (consume(c, '}')) break;
+		if (!consume(c, ',')) return false;
+	}
+	bool user = type == "UserMessage" || type == "userMessage";
+	bool assistant = type == "AgentMessage" || type == "agentMessage";
+	if (!user && !assistant) return true;
+	role = user ? "user" : "assistant";
+	if (!assistant || !hasText)
+	{
+		text.clear();
+		std::vector<JsonPiece> parts;
+		if (content.p && !parseContentValue(content, parts, user ? "text" : "Text")) return false;
+		for (size_t i = 0; i < parts.size(); ++i)
+		{
+			if (i) text += '\n';
+			text += parts[i].text;
+		}
+	}
+	if (!text.empty()) pieces.push_back({ false, std::move(text) });
+	return true;
+}
+
 // Parse Codex payload object.
 // Handles: message (assistant text), function_call (tool invocation),
 // user_message, agent_message. Skips function_call_output and reasoning.
@@ -585,6 +645,8 @@ static bool parseCodexPayload(JsonCursor& c, std::string& role, std::vector<Json
 	std::string payloadArguments;
 	std::string payloadMessage;
 	std::vector<JsonPiece> contentPieces;
+	std::string completedRole;
+	std::vector<JsonPiece> completedPieces;
 
 	for (;;)
 	{
@@ -653,6 +715,10 @@ static bool parseCodexPayload(JsonCursor& c, std::string& role, std::vector<Json
 				if (!skipValue(c)) return false;
 			}
 		}
+		else if (key == "item")
+		{
+			if (!parseCompletedMessage(c, completedRole, completedPieces)) return false;
+		}
 		else if (key == "content")
 		{
 			// message payload has content array with output_text items
@@ -669,7 +735,13 @@ static bool parseCodexPayload(JsonCursor& c, std::string& role, std::vector<Json
 	}
 
 	// Dispatch based on Codex payload type
-	if (payloadType == "message")
+	if (payloadType == "item_completed")
+	{
+		role = completedRole;
+		for (auto& p : completedPieces) pieces.push_back(std::move(p));
+		hasContent = !completedRole.empty();
+	}
+	else if (payloadType == "message")
 	{
 		// Codex assistant/developer message with content array
 		role = payloadRole;

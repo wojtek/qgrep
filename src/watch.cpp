@@ -96,7 +96,7 @@ static bool getDataFileList(Output* output, const char* path, std::vector<FileIn
 	}
 
 	DataFileHeader header;
-	if (!read(in, header) || memcmp(header.magic, kDataFileHeaderMagic, strlen(kDataFileHeaderMagic)) != 0)
+	if (!read(in, header) || !isKnownDataFileHeader(header.magic))
 	{
 		output->error("Error reading data file %s: file format is out of date, update the project to fix\n", path);
 		return false;

@@ -11,7 +11,7 @@ enum TransformKind;
 struct BuildContext;
 struct FileInfo;
 
-BuildContext* buildStart(Output* output, const char* path, unsigned int fileCount = 0);
+BuildContext* buildStart(Output* output, const char* path, unsigned int fileCount, const char* dataFileMagic);
 
 void buildAppendFilePart(BuildContext* context, const char* path, unsigned int startLine, const char* data, size_t dataSize, TransformKind transform, uint64_t timeStamp, uint64_t fileSize);
 bool buildAppendFile(BuildContext* context, const char* path, uint64_t timeStamp, uint64_t fileSize, TransformKind transform);
