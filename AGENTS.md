@@ -13,5 +13,5 @@ Project notes for automation and code changes:
 - `conv.cfg` content summary:
   - JSONL transform on `C:\Users\wojtek\.claude\projects\**\*.jsonl` and `C:\Users\wojtek\.codex\sessions\**\*.jsonl`
   - Gemini transform on `C:\Users\wojtek\.gemini\tmp\*\chats\*.json` (excluding `bin/`)
-- Transform caching change: after deploying new qgrep, run update once to seed transform metadata; subsequent updates should be fast unless logs change.
+- Transform caching: unchanged sources can be reused within one compatible content generation. A generation change requires coordinated binary/AgentX-consumer updates followed by an explicit index build; ordinary update must refuse an incompatible generation without changing it.
 - `CLAUDE.md` is a symlink to this file.

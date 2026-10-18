@@ -37,7 +37,7 @@
 #include <chrono>
 #include <stdexcept>
 
-const char* kVersion = "1.3-agentx-jsonl-v4";
+const char* kVersion = "1.3-agentx-jsonl-v5";
 
 namespace re2 { bool RunningOnValgrind() { return false; } }
 

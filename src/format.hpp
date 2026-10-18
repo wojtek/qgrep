@@ -27,8 +27,8 @@ struct FileFileEntry
 
 const char kDataFileHeaderMagic[] = "QGD2";
 // The physical layout is unchanged; JSONL content semantics are incompatible
-// with producers that index standalone Codex startup blocks. Ordinary indexes stay QGD2.
-const char kJsonlDataFileHeaderMagic[] = "QGD4";
+// with different discussion selection/line counts. Ordinary indexes stay QGD2.
+const char kJsonlDataFileHeaderMagic[] = "QGD5";
 
 inline bool isKnownDataFileHeader(const char* magic)
 {

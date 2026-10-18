@@ -803,6 +803,102 @@ static bool parseCodexPayload(JsonCursor& c, std::string& role, std::vector<Json
 	return true;
 }
 
+
+// Select a field without depending on JSON member order. The top-level parser
+// has already validated/skipped each value; unrelated attachment fields stay out.
+static bool queuedField(JsonCursor c, const char* name, JsonCursor& value)
+{
+	if (!consume(c, '{')) return false;
+	for (;;)
+	{
+		skipWhitespace(c);
+		if (consume(c, '}')) return false;
+		std::string key;
+		if (!parseJsonString(c, key)) return false;
+		skipWhitespace(c);
+		if (!consume(c, ':')) return false;
+		skipWhitespace(c);
+		const char* start = c.p;
+		if (!skipValue(c)) return false;
+		if (key == name) { value = {start, c.p}; return true; }
+		skipWhitespace(c);
+		if (consume(c, '}')) return false;
+		if (!consume(c, ',')) return false;
+	}
+}
+
+static bool queuedFieldEquals(JsonCursor object, const char* name, const char* expected)
+{
+	JsonCursor field = {};
+	std::string value;
+	return queuedField(object, name, field) && parseJsonString(field, value) && value == expected;
+}
+
+// Python str.strip() whitespace, encoded as UTF-8. This is only prompt
+// normalization; ordinary JSONL content retains its established byte contract.
+static size_t queuedWhitespaceWidth(const std::string& text, size_t offset)
+{
+	unsigned char ch = static_cast<unsigned char>(text[offset]);
+	if ((ch >= 0x09 && ch <= 0x0d) || (ch >= 0x1c && ch <= 0x20)) return 1;
+	if (ch == 0xc2 && offset + 1 < text.size() &&
+		(text[offset + 1] == '\x85' || text[offset + 1] == '\xa0')) return 2;
+	if (offset + 2 >= text.size()) return 0;
+	unsigned char second = static_cast<unsigned char>(text[offset + 1]);
+	unsigned char third = static_cast<unsigned char>(text[offset + 2]);
+	if ((ch == 0xe1 && second == 0x9a && third == 0x80) ||
+		(ch == 0xe2 && second == 0x80 && ((third >= 0x80 && third <= 0x8a) || third == 0xa8 || third == 0xa9 || third == 0xaf)) ||
+		(ch == 0xe2 && second == 0x81 && third == 0x9f) ||
+		(ch == 0xe3 && second == 0x80 && third == 0x80)) return 3;
+	return 0;
+}
+
+static bool parseQueuedPrompt(JsonCursor attachment, std::string& text)
+{
+	JsonCursor origin = {}, prompt = {};
+	if (!queuedFieldEquals(attachment, "type", "queued_command") ||
+		!queuedField(attachment, "origin", origin) || !queuedFieldEquals(origin, "kind", "human") ||
+		!queuedField(attachment, "prompt", prompt)) return false;
+	if (prompt.p < prompt.end && *prompt.p == '"')
+	{
+		if (!parseJsonString(prompt, text)) return false;
+	}
+	else if (consume(prompt, '['))
+	{
+		bool first = true;
+		for (;;)
+		{
+			skipWhitespace(prompt);
+			if (consume(prompt, ']')) break;
+			const char* start = prompt.p;
+			if (!skipValue(prompt)) return false;
+			JsonCursor part = {start, prompt.p}, field = {};
+			std::string value;
+			// Delivered submission normalization accepts strings and text mappings,
+			// irrespective of type, and ignores thinking/tool/other non-text values.
+			if (parseJsonString(part, value) ||
+				(queuedField({start, prompt.p}, "text", field) && parseJsonString(field, value)))
+			{
+				if (!first) text += '\n';
+				text += value;
+				first = false;
+			}
+			skipWhitespace(prompt);
+			if (consume(prompt, ']')) break;
+			if (!consume(prompt, ',')) return false;
+		}
+	}
+	else return false;
+	size_t first = 0, last = 0;
+	for (size_t i = 0; i < text.size(); )
+	{
+		size_t width = queuedWhitespaceWidth(text, i);
+		if (!width) { if (!last) first = i; last = i + 1; }
+		i += width ? width : 1;
+	}
+	text = text.substr(first, last - first);
+	return !text.empty();
+}
+
 static bool parseTopObject(JsonCursor& c, std::string& role, std::vector<JsonPiece>& pieces, bool& hasMessage)
 {
 	skipWhitespace(c);
@@ -811,6 +907,8 @@ static bool parseTopObject(JsonCursor& c, std::string& role, std::vector<JsonPie
 	hasMessage = false;
 
 	std::string key;
+	std::string type;
+	JsonCursor attachment = {};
 
 	for (;;)
 	{
@@ -822,7 +920,17 @@ static bool parseTopObject(JsonCursor& c, std::string& role, std::vector<JsonPie
 		if (!consume(c, ':')) return false;
 		skipWhitespace(c);
 
-		if (key == "message")
+		if (key == "type" && c.p < c.end && *c.p == '"')
+		{
+			if (!parseJsonString(c, type)) return false;
+		}
+		else if (key == "attachment")
+		{
+			const char* start = c.p;
+			if (!skipValue(c)) return false;
+			attachment = {start, c.p};
+		}
+		else if (key == "message")
 		{
 			// Claude Code: top-level "message" object with role + content
 			if (!parseMessageObject(c, role, pieces)) return false;
@@ -844,6 +952,14 @@ static bool parseTopObject(JsonCursor& c, std::string& role, std::vector<JsonPie
 		if (!consume(c, ',')) return false;
 	}
 
+	std::string prompt;
+	if (type == "attachment" && parseQueuedPrompt(attachment, prompt))
+	{
+		role = "user";
+		pieces.clear();
+		pieces.push_back({false, std::move(prompt)});
+		hasMessage = true;
+	}
 	return true;
 }
 
