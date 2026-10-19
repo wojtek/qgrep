@@ -109,9 +109,20 @@ bool removeFile(const char* path)
 
 bool getFileAttributes(const char* path, uint64_t* mtime, uint64_t* size)
 {
+	// Metadata must accept the same long source paths as the file readers.
+	std::wstring wpath = fromUtf8(normalizePath(getCurrentDirectory().c_str(), path).c_str());
+	std::replace(wpath.begin(), wpath.end(), '/', '\\');
+	if (wpath.compare(0, 4, L"\\\\?\\") != 0)
+	{
+		if (wpath.compare(0, 2, L"\\\\") == 0)
+			wpath.replace(0, 2, L"\\\\?\\UNC\\");
+		else
+			wpath.insert(0, L"\\\\?\\");
+	}
+
 	WIN32_FILE_ATTRIBUTE_DATA data;
 
-	if (GetFileAttributesExW(fromUtf8(path).c_str(), GetFileExInfoStandard, &data))
+	if (GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard, &data))
 	{
 		*mtime = combine(data.ftLastWriteTime.dwHighDateTime, data.ftLastWriteTime.dwLowDateTime);
 		*size = combine(data.nFileSizeHigh, data.nFileSizeLow);
